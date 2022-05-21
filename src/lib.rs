@@ -1,6 +1,7 @@
-use log::Level;
+#![allow(unused_braces)]
+use log::{Level, info};
 use mogwai::prelude::*;
-use std::panic;
+use std::{convert::TryInto, panic};
 use wasm_bindgen::prelude::*;
 
 // When the `wee_alloc` feature is enabled, use `wee_alloc` as the global
@@ -9,69 +10,50 @@ use wasm_bindgen::prelude::*;
 #[global_allocator]
 static ALLOC: wee_alloc::WeeAlloc = wee_alloc::WeeAlloc::INIT;
 
-struct App {
-    clicks: u32,
-}
-
-#[derive(Clone)]
-enum AppModel {
-    Click,
-}
-
-#[derive(Clone)]
-enum AppView {
-    Clicked(u32),
-}
-
-impl Component for App {
-    type DomNode = HtmlElement;
-    type ModelMsg = AppModel;
-    type ViewMsg = AppView;
-
-    fn update(&mut self, msg: &AppModel, tx: &Transmitter<AppView>, _sub: &Subscriber<AppModel>) {
-        match msg {
-            AppModel::Click => {
-                self.clicks += 1;
-                tx.send(&AppView::Clicked(self.clicks));
-            }
-        }
-    }
-
-    fn view(&self, tx: &Transmitter<AppModel>, rx: &Receiver<AppView>) -> ViewBuilder<HtmlElement> {
-        builder! {
-            <div
-                style=
-                    vec![
-                        "float: left;",
-                        "padding: 1em;",
-                        "border-radius:0.5em;",
-                        "border: 1px solid #ddd;",
-                        "background: #f7f7f7;",
-                        "cursor: pointer;"
-                    ].concat()
-                on:click=tx.contra_map(|_| AppModel::Click)>
-                <p>
-                    {(
-                        "Hello from mogwai!",
-                        rx.branch_map(|msg| {
-                            match msg {
-                                AppView::Clicked(1) => format!("Caught 1 click, click again 😀"),
-                                AppView::Clicked(n) => format!("Caught {} clicks", n),
-                            }
-                        })
-                    )}
-                </p>
-            </div>
-        }
-    }
-}
-
-#[wasm_bindgen(start)]
-pub fn main() -> Result<(), JsValue> {
+#[wasm_bindgen]
+pub fn run_app() -> Result<(), JsValue> {
     panic::set_hook(Box::new(console_error_panic_hook::hook));
     console_log::init_with_level(Level::Trace).unwrap();
 
-    let gizmo = Gizmo::from(App{ clicks: 0 });
-    let view = View::from(gizmo.view_builder());
-    view.run()
+    info!("mogwai webpack example");
+
+    let parent_id = Some("app");
+
+    mogwai::spawn(async move {
+        let (to_logic, mut from_view) = mogwai::channel::broadcast::bounded::<()>(1);
+        let (to_view, from_logic) = mogwai::channel::broadcast::bounded::<String>(1);
+        let bldr: ViewBuilder<Dom> = mogwai::macros::builder! {
+            <button
+             style:cursor = "pointer"
+             on:click=to_logic.sink().with(|_| async{Ok(())})
+             >
+                {("Click me!", from_logic)}
+            </button>
+        };
+
+        let view: View<Dom> = bldr.try_into().unwrap();
+        if let Some(id) = parent_id {
+            let parent = mogwai::utils::document().get_element_by_id(&id).unwrap();
+            view.run_in_container(&parent)
+        } else {
+            view.run()
+        }
+        .unwrap();
+
+        let mut clicks:u32 = 0;
+        loop {
+            match from_view.next().await {
+                Some(_ev) => {
+                    clicks += 1;
+                    to_view.broadcast(match clicks {
+                        1 => "Click again.".to_string(),
+                        n => format!("Clicked {} times", n),
+                    }).await.unwrap();
+                }
+                None => break,
+            }
+        }
+    });
+
+    Ok(())
 }
